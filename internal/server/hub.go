@@ -1,14 +1,17 @@
 package server
 
 import (
-	"log"	"net/http"
+	"encoding/json"
+	"log"
+	"net/http"
 
 	"github.com/gorilla/websocket"
+	"github.com/leogsouza/collabdraw/internal/message"
+	"github.com/tidwall/gjson"
 )
 
-
 type Hub struct {
-	Clients    []Client
+	Clients    []*Client
 	Register   chan *Client
 	Unregister chan *Client
 }
@@ -43,7 +46,7 @@ func (hub *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not upgrade", http.StatusInternalServerError)
 		return
 	}
-	client  := NewClient(hub, socket)
+	client := NewClient(hub, socket)
 	hub.Clients = append(hub.Clients, client)
 	hub.Register <- client
 	client.Run()
@@ -60,5 +63,62 @@ func (hub *Hub) Broadcast(message interface{}, ignore *Client) {
 		if c != ignore {
 			c.Outbound <- data
 		}
+	}
+}
+
+func (hub *Hub) OnConnect(client *Client) {
+	log.Println("client connected:", client.Socket.RemoteAddr())
+
+	// Make list of all users
+	users := []message.User{}
+
+	for _, c := range hub.Clients {
+		users = append(users, message.User{ID: c.ID, Color: c.Color})
+	}
+
+	// Notify user joined
+	hub.Send(message.NewConnected(client.Color, users), client)
+	hub.Broadcast(message.NewUserJoined(client.ID, client.Color), client)
+}
+
+func (hub *Hub) OnDisconnect(client *Client) {
+	log.Println("client disconnected:", client.Socket.RemoteAddr())
+	client.Close()
+
+	i := -1
+	for j, c := range hub.Clients {
+		if c.ID == client.ID {
+			i = j
+			break
+		}
+	}
+
+	// Remove client from list
+	copy(hub.Clients[i:], hub.Clients[i+1:])
+	hub.Clients[len(hub.Clients)-1] = nil
+	hub.Clients = hub.Clients[:len(hub.Clients)-1]
+
+	hub.Broadcast(message.NewUserLeft(client.ID), nil)
+}
+
+func (hub *Hub) OnMessage(data []byte, client *Client) {
+	kind := gjson.GetBytes(data, "kind").Int()
+
+	if kind == message.KindStroke {
+		var msg message.Stroke
+		if json.Unmarshal(data, &msg) != nil {
+			return
+		}
+
+		msg.UserID = client.ID
+		hub.Broadcast(msg, client)
+	} else if kind == message.KindClear {
+		var msg message.Clear
+		if json.Unmarshal(data, &msg) != nil {
+			return
+		}
+
+		msg.UserID = client.ID
+		hub.Broadcast(msg, client)
 	}
 }

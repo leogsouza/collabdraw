@@ -55,3 +55,8 @@ func (client Client) Run() {
 	go client.Read()
 	go client.Write()
 }
+
+func (client Client) Close() {
+	client.Socket.Close()
+	close(client.Outbound)
+}
